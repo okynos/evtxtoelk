@@ -24,9 +24,8 @@ class EvtxToElk:
             return False
 
     @staticmethod
-    def evtx_to_elk(filename, elk_ip, elk_index="hostlogs", bulk_queue_len_threshold=500, metadata={}):
-        bulk_queue = []
-        es = Elasticsearch([elk_ip])
+    def evtx_lines(filename):
+        events = []
         with open(filename) as infile:
             with contextlib.closing(mmap.mmap(infile.fileno(), 0, access=mmap.ACCESS_READ)) as buf:
                 fh = FileHeader(buf, 0x0)
@@ -85,35 +84,7 @@ class EvtxToElk:
                         else:
                             pass
 
-                        # Insert data into queue
-                        #event_record = json.loads(json.dumps(log_line))
-                        #event_record.update({
-                        #    "_index": elk_index,
-                        #    "_type": elk_index,
-                        #    "metadata": metadata
-                        #})
-                        #bulk_queue.append(event_record)
-                        event_data = json.loads(json.dumps(log_line))
-                        event_data["_index"] = elk_index
-                        event_data["_type"] = elk_index
-                        event_data["meta"] = metadata
-                        bulk_queue.append(event_data)
-
-                        #bulk_queue.append({
-                        #    "_index": elk_index,
-                        #    "_type": elk_index,
-                        #    "body": json.loads(json.dumps(log_line)),
-                        #    "metadata": metadata
-                        #})
-
-                        if len(bulk_queue) == bulk_queue_len_threshold:
-                            print('Bulkingrecords to ES: ' + str(len(bulk_queue)))
-                            # start parallel bulking to ElasticSearch, default 500 chunks;
-                            if EvtxToElk.bulk_to_elasticsearch(es, bulk_queue):
-                                bulk_queue = []
-                            else:
-                                print('Failed to bulk data to Elasticsearch')
-                                sys.exit(1)
+                        events.append( json.loads(json.dumps(log_line)) )
 
                     except:
                         print("***********")
@@ -121,26 +92,78 @@ class EvtxToElk:
                         print(traceback.print_exc())
                         print(json.dumps(log_line, indent=2))
                         print("***********")
+        return events
 
-                # Check for any remaining records in the bulk queue
-                if len(bulk_queue) > 0:
-                    print('Bulking final set of records to ES: ' + str(len(bulk_queue)))
-                    if EvtxToElk.bulk_to_elasticsearch(es, bulk_queue):
-                        bulk_queue = []
-                    else:
-                        print('Failed to bulk data to Elasticsearch')
-                        sys.exit(1)
+
+    @staticmethod
+    def evtx_to_elk(filename, elk_ip, elk_index="hostlogs", bulk_queue_len_threshold=500, metadata={}):
+        bulk_queue = []
+        es = Elasticsearch([elk_ip])
+
+        for event in EvtxToElk.evtx_lines(filename):
+            # Insert data into queue
+            #event_record.update({
+            #    "_index": elk_index,
+            #    "_type": elk_index,
+            #    "metadata": metadata
+            #})
+            #bulk_queue.append(event_record)
+            event["_index"] = elk_index
+            event["_type"] = elk_index
+            event["meta"] = metadata
+            bulk_queue.append(event)
+
+            #bulk_queue.append({
+            #    "_index": elk_index,
+            #    "_type": elk_index,
+            #    "body": json.loads(json.dumps(log_line)),
+            #    "metadata": metadata
+            #})
+
+            if len(bulk_queue) == bulk_queue_len_threshold:
+                print('Bulkingrecords to ES: ' + str(len(bulk_queue)))
+                # start parallel bulking to ElasticSearch, default 500 chunks;
+                if EvtxToElk.bulk_to_elasticsearch(es, bulk_queue):
+                    bulk_queue = []
+                else:
+                    print('Failed to bulk data to Elasticsearch')
+                    sys.exit(1)
+
+            # Check for any remaining records in the bulk queue
+            if len(bulk_queue) > 0:
+                print('Bulking final set of records to ES: ' + str(len(bulk_queue)))
+                if EvtxToElk.bulk_to_elasticsearch(es, bulk_queue):
+                    bulk_queue = []
+                else:
+                    print('Failed to bulk data to Elasticsearch')
+                    sys.exit(1)
+
+    @staticmethod
+    def evtx_to_json(filename, output_file, debug = False):
+        ctr = 0
+        for event in EvtxToElk.evtx_lines(filename):
+            if debug:
+                print(json.dumps(event))
+            # Write event line to JSON file
+            with open(output_file, "a") as output:
+                output.write(json.dumps(event))
+            ctr += 1
+        print(str(ctr) + ' events exported to ' + output_file)
 
 
 if __name__ == "__main__":
     # Create argument parser
     parser = argparse.ArgumentParser()
     # Add arguments
-    parser.add_argument('evtxfile', help="Evtx file to parse")
-    parser.add_argument('elk_ip', default="localhost", help="IP (and port) of ELK instance")
-    parser.add_argument('-i', default="hostlogs", help="ELK index to load data into")
-    parser.add_argument('-s', default=500, help="Size of queue")
-    parser.add_argument('-meta', default={}, type=json.loads, help="Metadata to add to records")
+    parser.add_argument('evtxfile', help="Evtx file to parse.")
+    parser.add_argument('output', default="localhost", help="IP (and port) of ELK instance or .json filename to local export.")
+    parser.add_argument('-i', default="hostlogs", help="ELK index to load data into.")
+    parser.add_argument('-s', default=500, help="Size of queue.")
+    parser.add_argument('-meta', default={}, type=json.loads, help="Metadata to add to records.")
+    parser.add_argument('-d', default=False, help="Debug JSON output process.")
     # Parse arguments and call evtx to elk class
     args = parser.parse_args()
-    EvtxToElk.evtx_to_elk(args.evtxfile, args.elk_ip, elk_index=args.i, bulk_queue_len_threshold=int(args.s), metadata=args.meta)
+    if '.json' in args.output:
+        EvtxToElk.evtx_to_json(args.evtxfile, args.output, args.d)
+    else:
+        EvtxToElk.evtx_to_elk(args.evtxfile, args.output, elk_index=args.i, bulk_queue_len_threshold=int(args.s), metadata=args.meta)
